@@ -50,8 +50,18 @@ void rq_init(struct rq *rq);
 int rq_enqueue(struct rq *rq, struct task_struct *task);
 struct task_struct *rq_dequeue(struct rq *rq);
 
-/* main data structure */
 
+struct rq_LIFO {
+    unsigned int top;
+    unsigned int mask; /* the size is power of two, so mask will be size - 1 */
+    struct task_struct *r[RINGBUFFER_SIZE];
+};
+void rq_LIFO_init(struct rq_LIFO *rq);
+int rq_LIFO_enqueue(struct rq_LIFO *rq, struct task_struct *task);
+struct task_struct *rq_LIFO_dequeue(struct rq_LIFO *rq);
+
+
+/* main data structure */
 #define MAX_CR_TABLE_SIZE 10
 
 struct cr {
@@ -62,7 +72,9 @@ struct cr {
 
     /* scheduler - chose by the flags */
     struct rq rq; /* FIFO */
-    struct rb_root root; /* Default */
+    struct rb_root root; /* Default */ 
+
+    struct rq_LIFO rq_LIFO;      //FILO    
 
     /* sched operations */
     int (*schedule)(struct cr *cr, job_t func, void *args);

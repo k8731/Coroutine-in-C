@@ -1,20 +1,19 @@
 #define _GNU_SOURCE
-#include <stdint.h>
-#include <stdlib.h>
 #include <errno.h>
-#include <time.h>
 #include <sched.h>
-
-#include "rbtree.h"
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 #include "context.h"
 #include "coroutine.h"
 #include "coroutine_int.h"
+#include "rbtree.h"
 
 /* FIFO scheduler */
 
-static inline int fifo_schedule(struct cr *cr, job_t func, void *args)
-{
-    struct task_struct *new_task;
+static inline int fifo_schedule(struct cr* cr, job_t func, void* args) {
+    struct task_struct* new_task;
 
     new_task = calloc(1, sizeof(struct task_struct));
     if (!new_task)
@@ -35,22 +34,48 @@ static inline int fifo_schedule(struct cr *cr, job_t func, void *args)
     return new_task->tfd;
 }
 
-static inline struct task_struct *fifo_pick_next_task(struct cr *cr)
-{
+static inline struct task_struct* fifo_pick_next_task(struct cr* cr) {
     return rq_dequeue(&cr->rq);
 }
 
-static inline int fifo_put_prev_task(struct cr *cr, struct task_struct *prev)
-{
+static inline int fifo_put_prev_task(struct cr* cr, struct task_struct* prev) {
     return rq_enqueue(&cr->rq, prev);
+}
+
+/* FILO scheduler */
+static inline int filo_schedule(struct cr* cr, job_t func, void* args) {
+    struct task_struct* new_task;
+    new_task = calloc(1, sizeof(struct task_struct));
+    if (!new_task) {
+        return -ENOMEM;
+    }
+    if (rq_LIFO_enqueue(&cr->rq_LIFO, new_task) < 0) {
+        free(new_task);
+        return -ENOMEM;
+    }
+    new_task->cr = cr;
+    new_task->tfd = cr->size++;
+    new_task->job = func;
+    new_task->args = args;
+    new_task->context.label = NULL;
+    new_task->context.wait_yield = 1;
+    new_task->context.blocked = 1;
+    return new_task->tfd;
+}
+
+static inline struct task_struct* filo_pick_next_task(struct cr* cr) {
+    return rq_LIFO_dequeue(&cr->rq_LIFO);
+}
+
+static inline int filo_put_prev_task(struct cr* cr, struct task_struct* prev) {
+    return rq_LIFO_enqueue(&cr->rq_LIFO, prev);
 }
 
 /* Default scheduler */
 
-static RBTREE_CMP_INSERT_DEFINE(rb_cmp_insert, _n1, _n2)
-{
-    struct task_struct *n1 = container_of(_n1, struct task_struct, node);
-    struct task_struct *n2 = container_of(_n2, struct task_struct, node);
+static RBTREE_CMP_INSERT_DEFINE(rb_cmp_insert, _n1, _n2) {
+    struct task_struct* n1 = container_of(_n1, struct task_struct, node);
+    struct task_struct* n2 = container_of(_n2, struct task_struct, node);
     if (n1->sum_exec_runtime < n2->sum_exec_runtime)
         return 1;
     else {
@@ -60,13 +85,12 @@ static RBTREE_CMP_INSERT_DEFINE(rb_cmp_insert, _n1, _n2)
     }
 }
 
-static RBTREE_CMP_SEARCH_DEFINE(rb_cmp_search, _n1, key)
-{
-    struct task_struct *n1 = container_of(_n1, struct task_struct, node);
+static RBTREE_CMP_SEARCH_DEFINE(rb_cmp_search, _n1, key) {
+    struct task_struct* n1 = container_of(_n1, struct task_struct, node);
 
-    if (n1->sum_exec_runtime == *(long *)key)
+    if (n1->sum_exec_runtime == *(long*)key)
         return RB_EQUAL;
-    else if (n1->sum_exec_runtime > *(long *)key)
+    else if (n1->sum_exec_runtime > *(long*)key)
         return RB_RIGHT;
     else
         return RB_LEFT;
@@ -75,9 +99,8 @@ static RBTREE_CMP_SEARCH_DEFINE(rb_cmp_search, _n1, key)
 #define time_diff(start, end) \
     (end - start < 0 ? (1000000000 + end - start) : (end - start))
 
-static inline int default_schedule(struct cr *cr, job_t func, void *args)
-{
-    struct task_struct *new_task;
+static inline int default_schedule(struct cr* cr, job_t func, void* args) {
+    struct task_struct* new_task;
     static long exec_base = 0;
 
     new_task = calloc(1, sizeof(struct task_struct));
@@ -98,10 +121,9 @@ static inline int default_schedule(struct cr *cr, job_t func, void *args)
     return new_task->tfd;
 }
 
-static inline struct task_struct *default_pick_next_task(struct cr *cr)
-{
-    struct rb_node *node = rbtree_min(&cr->root);
-    struct task_struct *task = container_of(node, struct task_struct, node);
+static inline struct task_struct* default_pick_next_task(struct cr* cr) {
+    struct rb_node* node = rbtree_min(&cr->root);
+    struct task_struct* task = container_of(node, struct task_struct, node);
     struct timespec start;
 
     if (node == NULL)
@@ -113,8 +135,7 @@ static inline struct task_struct *default_pick_next_task(struct cr *cr)
     return task;
 }
 
-static inline int default_put_prev_task(struct cr *cr, struct task_struct *prev)
-{
+static inline int default_put_prev_task(struct cr* cr, struct task_struct* prev) {
     struct timespec end;
 
     clock_gettime(CLOCK_MONOTONIC, &end);
@@ -124,19 +145,25 @@ static inline int default_put_prev_task(struct cr *cr, struct task_struct *prev)
     return 0;
 }
 
-void sched_init(struct cr *cr)
-{
+void sched_init(struct cr* cr) {
     switch (cr->flags) {
-    case CR_DEFAULT:
-        RB_ROOT_INIT(cr->root);
-        cr->schedule = default_schedule;
-        cr->pick_next_task = default_pick_next_task;
-        cr->put_prev_task = default_put_prev_task;
-        return;
-    case CR_FIFO:
-        rq_init(&cr->rq);
-        cr->schedule = fifo_schedule;
-        cr->pick_next_task = fifo_pick_next_task;
-        cr->put_prev_task = fifo_put_prev_task;
+        case CR_DEFAULT:
+            RB_ROOT_INIT(cr->root);
+            cr->schedule = default_schedule;
+            cr->pick_next_task = default_pick_next_task;
+            cr->put_prev_task = default_put_prev_task;
+            return;
+        case CR_FIFO:
+            rq_init(&cr->rq);
+            cr->schedule = fifo_schedule;
+            cr->pick_next_task = fifo_pick_next_task;
+            cr->put_prev_task = fifo_put_prev_task;
+            return;
+        case CR_FILO:
+            rq_LIFO_init(&cr->rq_LIFO);
+            cr->schedule = filo_schedule;
+            cr->pick_next_task = filo_pick_next_task;
+            cr->put_prev_task = filo_put_prev_task;
+            return;
     }
 }
